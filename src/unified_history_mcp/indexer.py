@@ -61,12 +61,16 @@ def build_index(cfg: DomainConfig, index_dir: Optional[str] = None) -> tuple[boo
     if not files:
         return False, f"No files found for domain '{cfg.name}' in {cfg.dir}"
 
+    # For "dirs" domains the content lives in per-dir files (e.g. messages.jsonl);
+    # fst_pattern overrides the dir-glob so fst-indexer indexes those files.
+    fst_pattern = cfg.fst_pattern or cfg.pattern
+
     try:
         cmd = [
             binary,
             "build",
             "--dir", str(cfg.dir.resolve()),
-            "--pattern", cfg.pattern,
+            "--pattern", fst_pattern,
             "--extractor", cfg.extractor,
             "--output", str(out_dir),
         ]
@@ -76,16 +80,39 @@ def build_index(cfg: DomainConfig, index_dir: Optional[str] = None) -> tuple[boo
             text=True,
             timeout=120,
         )
-        if result.returncode == 0:
-            return True, f"Index built for '{cfg.name}' ({len(files)} files) at {out_dir}"
-        else:
+        if result.returncode != 0:
             return False, f"Index build failed for '{cfg.name}': {result.stderr.strip()}"
+
+        # For "dirs" domains the manifest filename is now "<dir>/<file>"; rewrite
+        # it to the parent directory name so the server can resolve
+        # {domain_dir}/{parent}/{message_file} when reading hits.
+        if cfg.type == "dirs":
+            _fix_dirs_manifest(out_dir)
+
+        return True, f"Index built for '{cfg.name}' ({len(files)} files) at {out_dir}"
     except FileNotFoundError:
         return False, f"fst-indexer binary not found: {binary}. Install it from the fst-indexer project."
     except subprocess.TimeoutExpired:
         return False, f"Index build timed out for '{cfg.name}'"
     except OSError as e:
         return False, f"Index build error for '{cfg.name}': {e}"
+
+
+def _fix_dirs_manifest(index_dir: Path) -> None:
+    """Rewrite a dirs-domain manifest so each filename is its parent directory name."""
+    manifest_path = Path(index_dir) / "manifest.json"
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return
+    for fe in data.get("files", []):
+        parent = Path(str(fe.get("filename", ""))).parent.name
+        if parent and parent != ".":
+            fe["filename"] = parent
+    try:
+        manifest_path.write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def search_fst(

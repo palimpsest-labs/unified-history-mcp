@@ -34,6 +34,11 @@ def render_list_entry(domain_type: str, meta: dict) -> list[str]:
             f"  Entries: {meta.get('entries', '?')}, Size: {meta.get('size_kb', '?')} KB"
         )
 
+    elif domain_type == "web-archive":
+        parts.append(
+            f"  Entries: {meta.get('entries', '?')}, Size: {meta.get('size_kb', '?')} KB"
+        )
+
     return parts
 
 
@@ -77,5 +82,16 @@ def render_read_entry(domain_type: str, entry: dict) -> list[str]:
             lines.append(f"  Summary: {summary_text[:200]}")
         if body:
             lines.append(f"  Body: {body[:200]}")
+
+    elif domain_type == "web-archive":
+        ts = entry.get("timestamp", "?")
+        title = entry.get("title", "")
+        src = entry.get("source", "?")
+        content = entry.get("content", "")
+        lines.append(f"\n[{ts}] {title}")
+        lines.append(f"  Source: {src}")
+        if content:
+            for line_text in str(content).split("\n")[:20]:
+                lines.append(f"  {line_text[:300]}")
 
     return lines

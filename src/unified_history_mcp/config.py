@@ -25,6 +25,7 @@ class DomainConfig:
     renderer: str = ""
     label: str = "file"
     fst_binary: str = "fst-indexer"
+    fst_pattern: str = ""
     fst_index_dir: Optional[str] = None
     filters: list[str] = field(default_factory=list)
 
@@ -114,6 +115,7 @@ def load_config(path: Optional[Path] = None) -> Config:
             renderer=str(d.get("renderer", "")),
             label=str(d.get("label", "file")),
             fst_binary=str(d.get("fst_binary", "fst-indexer")),
+            fst_pattern=str(d.get("fst_pattern", "")),
             fst_index_dir=d.get("fst_index_dir"),
             filters=filters_list,
         )
