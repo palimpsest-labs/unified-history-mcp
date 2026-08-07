@@ -18,6 +18,7 @@ Tools:
 """
 
 import json
+import os
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -63,6 +64,33 @@ def _load_json(path: Path) -> dict | None:
         return json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _session_matches_cwd(session_dir: Path, cwd: str | None) -> bool:
+    """Return True if a session was created in ``cwd`` or a subdirectory of it.
+
+    Uses the session's ``meta.json`` -> ``environment.working_directory`` with a
+    prefix match ("cwd and everything under it"). Sessions with no recorded
+    working directory are kept (fail-open) so no data is silently hidden.
+    Only meaningful for the ``sessions`` domain.
+    """
+    if not cwd:
+        return True
+    try:
+        cwd = os.path.abspath(os.path.expanduser(cwd))
+    except (TypeError, ValueError):
+        return True
+    meta = _load_json(session_dir / "meta.json") or {}
+    wd = (meta.get("environment") or {}).get("working_directory")
+    if not wd:
+        return True  # no wd recorded — don't hide it
+    try:
+        wd = os.path.abspath(wd)
+    except (TypeError, ValueError):
+        return True
+    if wd == cwd:
+        return True
+    return wd.startswith(cwd + os.sep)
 
 
 def _msg_snippet(line: str) -> str:
@@ -454,6 +482,7 @@ def search(
     max_matches_per_file: int = 5,
     role: str | None = None,
     speaker: str | None = None,
+    cwd: str | None = None,
 ) -> str:
     """Search across domains with FST-backed full-text search.
 
@@ -475,6 +504,9 @@ def search(
         max_matches_per_file: Max matches from any single file (default 5)
         role:                 [sessions] Filter by role: user, assistant, tool
         speaker:              [transcripts] Filter by speaker name
+        cwd:                  [sessions] Only include sessions whose working
+                              directory is ``cwd`` or a subdirectory of it
+                              (prefix match). Ignored for other domains.
     """
     cfg = _get_config()
 
@@ -519,6 +551,7 @@ def search(
             case_sensitive,
             role,
             speaker,
+            cwd,
         )
 
     # --- Slow path: line-by-line scan ---
@@ -546,6 +579,8 @@ def search(
 
         for f in files:
             if not f.exists():
+                continue
+            if cwd and d_name == "sessions" and not _session_matches_cwd(f, cwd):
                 continue
             fd = date_fn(f)
             if d_from and fd and fd < d_from:
@@ -632,6 +667,7 @@ def list_domain(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int = 50,
+    cwd: str | None = None,
 ) -> str:
     """List available files in a domain with metadata and summaries.
 
@@ -640,6 +676,8 @@ def list_domain(
         date_from:   Optional start of date range (YYYY-MM-DD)
         date_to:     Optional end of date range (YYYY-MM-DD, inclusive)
         max_results: Maximum entries to show (default 50)
+        cwd:         [sessions] Only list sessions whose working directory is
+                     ``cwd`` or a subdirectory of it (prefix match).
     """
     cfg = _get_config()
     d_cfg = cfg.domains.get(domain)
@@ -666,6 +704,9 @@ def list_domain(
         if count >= max_results:
             output.append(f"\n... (truncated at {max_results})")
             break
+
+        if cwd and domain == "sessions" and not _session_matches_cwd(f, cwd):
+            continue
 
         fd = date_fn(f)
         if d_from and fd and fd < d_from:
@@ -705,6 +746,7 @@ def read(
     max_entries: int = 50,
     role: str | None = None,
     speaker: str | None = None,
+    cwd: str | None = None,
 ) -> str:
     """Read entries from a domain file.
 
@@ -714,6 +756,8 @@ def read(
         max_entries: Maximum entries to return, newest first (default 50)
         role:        [sessions] Filter by role: user, assistant, tool
         speaker:     [transcripts] Filter by speaker name
+        cwd:         [sessions] Only read sessions whose working directory is
+                     ``cwd`` or a subdirectory of it (prefix match).
     """
     cfg = _get_config()
     d_cfg = cfg.domains.get(domain)
@@ -724,6 +768,9 @@ def read(
     target = _resolve_file(d_cfg, id)
     if target is None:
         return f"{d_cfg.label.title()} not found: {id}"
+
+    if cwd and domain == "sessions" and not _session_matches_cwd(target, cwd):
+        return f"{d_cfg.label.title()} not found in {cwd}: {id}"
 
     list_meta_fn = _LIST_META.get(domain, lambda p: {})
     load_summary_fn = _LOAD_SUMMARY.get(domain, lambda p: None)
@@ -759,12 +806,14 @@ def read(
 
 
 @mcp.tool()
-def summary(domain: str, id: str) -> str:
+def summary(domain: str, id: str, cwd: str | None = None) -> str:
     """Get the AI-generated summary for a domain entry.
 
     Args:
         domain: Domain (sessions, transcripts)
         id:     File/directory name or unique prefix
+        cwd:    [sessions] Only allow sessions whose working directory is
+                ``cwd`` or a subdirectory of it (prefix match).
     """
     cfg = _get_config()
     d_cfg = cfg.domains.get(domain)
@@ -777,6 +826,9 @@ def summary(domain: str, id: str) -> str:
     target = _resolve_file(d_cfg, id)
     if target is None:
         return f"{d_cfg.label.title()} not found: {id}"
+
+    if cwd and domain == "sessions" and not _session_matches_cwd(target, cwd):
+        return f"{d_cfg.label.title()} not found in {cwd}: {id}"
 
     load_summary_fn = _LOAD_SUMMARY.get(domain, lambda p: None)
     list_meta_fn = _LIST_META.get(domain, lambda p: {})
@@ -957,6 +1009,7 @@ def _format_search_results(
     case_sensitive: bool,
     role: str | None,
     speaker: str | None,
+    cwd: str | None = None,
 ) -> str:
     """Format FST search results with domain-specific post-filtering."""
     cfg = _get_config()
@@ -1011,7 +1064,10 @@ def _format_search_results(
 
         # Resolve file path
         if r_domain == "sessions":
-            file_path = d_cfg.dir / fname / "messages.jsonl"
+            sess_dir = d_cfg.dir / fname
+            if cwd and not _session_matches_cwd(sess_dir, cwd):
+                continue
+            file_path = sess_dir / "messages.jsonl"
         else:
             file_path = d_cfg.dir / fname
 
